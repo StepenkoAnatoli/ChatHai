@@ -1,0 +1,15 @@
+﻿{
+  "name": "בוט לאיסוף פניות - שירותי ניקיון",
+  "description": "איסוף פרטים לקבלת הצעת מחיר. ללא חירום.",
+  "type": "wati_chatbot_flow",
+  "language": "he",
+  "nodes": [
+    {"id": "start", "type": "message", "title": "ברכה", "text": "היי! איזה סוג ניקיון אתה מעוניין?", "buttons": [{"id": "home", "text": "ניקיון בית"},{"id": "office", "text": "ניקיון משרד"},{"id": "after", "text": "ניקיון אחרי שיפוץ"}]},
+    {"id": "name", "type": "question", "title": "שם", "question": "איך קוראים לך?", "field": "name", "input_type": "text"},
+    {"id": "address", "type": "question", "title": "כתובת", "question": "כתובת לקבלת הצעת מחיר", "field": "address", "input_type": "text"},
+    {"id": "size", "type": "question", "title": "שטח", "question": "שטח/מספר חדרים", "field": "size", "input_type": "text"},
+    {"id": "summary", "type": "message", "title": "סיכום", "text": "קיבלתי את הפרטים. אעביר לבעל העסק לקבלת הצעת מחיר.", "buttons": [{"id": "handoff", "text": "העבר לנציג"}]},
+    {"id": "handoff", "type": "handoff", "title": "העברה", "assign_to_owner": true, "notify_owner": true, "notify_message": "פניית ניקיון מ-{{name}} | טלפון: {{contact.phone}} | כתובת: {{address}} | שטח: {{size}}"}
+  ],
+  "rules": {"always_allow_human_handoff": true, "never_give_price": true}
+}

@@ -1,0 +1,123 @@
+﻿{
+  "name": "בוט מינימלי - אינסטלטור/חשמלאי",
+  "description": "איסוף פרטים + מיון חירום + העברה לבעל העסק. ללא מתן מחיר.",
+  "type": "wati_chatbot_flow",
+  "language": "he",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "message",
+      "title": "ברכה",
+      "text": "היי! איך אפשר לעזור?\n\nבחר אחת מהאפשרויות:",
+      "buttons": [
+        { "id": "emergency", "text": "חירום / דחוף" },
+        { "id": "regular", "text": "פנייה רגילה" }
+      ]
+    },
+    {
+      "id": "emergency_check",
+      "type": "message",
+      "title": "מיון חירום",
+      "text": "מה הבעיה בדיוק?\nבחר או תאר בקצרה:",
+      "buttons": [
+        { "id": "leak", "text": "נזילה / דליפה" },
+        { "id": "burst", "text": "פיצוץ צינור" },
+        { "id": "no_water", "text": "אין מים" },
+        { "id": "elec_emerg", "text": "בעיה חשמלית דחופה" },
+        { "id": "no_power", "text": "אין חשמל" },
+        { "id": "emerg_other", "text": "אחר - דחוף" }
+      ],
+      "next": "emergency_type"
+    },
+    {
+      "id": "emergency_type",
+      "type": "save_answer",
+      "title": "שמירת סוג התקלה",
+      "source": "emergency_check",
+      "field": "emergency_type",
+      "next": "emergency_name"
+    },
+    {
+      "id": "emergency_name",
+      "type": "question",
+      "title": "שם לחירום",
+      "question": "כדי להעביר אותך מהר - איך קוראים לך?",
+      "field": "emergency_name",
+      "input_type": "text"
+    },
+    {
+      "id": "emergency_address",
+      "type": "question",
+      "title": "כתובת לחירום",
+      "question": "מה הכתובת המלאה (עיר, רחוב, מספר בית)?",
+      "field": "emergency_address",
+      "input_type": "text"
+    },
+    {
+      "id": "emergency_handoff",
+      "type": "handoff",
+      "title": "העברה מיידית לחירום",
+      "text": "קיבלתי את הפרטים. מעביר אותך מיד לבעל העסק.\n\nאם אפשר, שלח גם תמונה של הבעיה כאן.",
+      "assign_to_owner": true,
+      "notify_owner": true,
+      "notify_message": "חירום! פנייה דחופה מ-{{emergency_name}} | טלפון: {{contact.phone}} | כתובת: {{emergency_address}} | בעיה: {{emergency_type}}"
+    },
+    {
+      "id": "regular_name",
+      "type": "question",
+      "title": "שם",
+      "question": "איך קוראים לך?",
+      "field": "name",
+      "input_type": "text"
+    },
+    {
+      "id": "regular_address",
+      "type": "question",
+      "title": "כתובת",
+      "question": "מה הכתובת? (עיר + רחוב + מספר בית)",
+      "field": "address",
+      "input_type": "text"
+    },
+    {
+      "id": "regular_issue",
+      "type": "question",
+      "title": "תיאור הבעיה",
+      "question": "תאר בקצרה את הבעיה",
+      "field": "issue",
+      "input_type": "text"
+    },
+    {
+      "id": "regular_photo",
+      "type": "question",
+      "title": "תמונה",
+      "question": "אם יש תמונה של הבעיה - שלח אותה כאן. אם אין, לחץ 'אין תמונה'.",
+      "field": "photo",
+      "input_type": "media",
+      "allow_skip": true,
+      "skip_button": "אין תמונה",
+      "skip_value": "אין"
+    },
+    {
+      "id": "regular_summary",
+      "type": "message",
+      "title": "סיכום והעברה",
+      "text": "קיבלתי את הפרטים:\nשם: {{name}}\nכתובת: {{address}}\nבעיה: {{issue}}\n\nאני מעביר אותך כעת לבעל העסק.",
+      "buttons": [
+        { "id": "handoff_regular", "text": "העבר לנציג" }
+      ]
+    },
+    {
+      "id": "handoff_regular_action",
+      "type": "handoff",
+      "title": "העברה לבעל העסק",
+      "assign_to_owner": true,
+      "notify_owner": true,
+      "notify_message": "פנייה רגילה מ-{{name}} | טלפון: {{contact.phone}} | כתובת: {{address}} | בעיה: {{issue}}"
+    }
+  ],
+  "rules": {
+    "always_allow_human_handoff": true,
+    "never_give_price": true,
+    "emergency_keywords": ["נזילה", "דליפה", "פיצוץ", "מים גועשים", "אין מים", "חשמל", "קצר חשמלי", "אין חשמל"]
+  }
+}
