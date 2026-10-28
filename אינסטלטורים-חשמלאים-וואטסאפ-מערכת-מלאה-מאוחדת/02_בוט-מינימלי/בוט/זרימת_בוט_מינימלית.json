@@ -4,6 +4,7 @@
   "type": "wati_chatbot_flow",
   "importable": false,
   "build_note": "קובץ תיאור בלבד - כל צומת וכל חיבור מתועדים כאן, אבל בונים את הזרימה ידנית ב-WATI. זה לא קובץ ייבוא של WATI או של Typebot.",
+  "variable_note": "ב-WATI משתני צאט מתחילים ב-@ ומאפייני איש קשר ב-{{}}. מספר הטלפון של הפונה הוא {{phone}}. בעת הבנייה מוסיפים משתנה דרך הבורר שבצומת ולא בהקלדה ידנית - אם הודעת ההעברה לא מצליחה לקרוא משתנה צאט, מוסיפים לפני ההעברה צומת Update Attribute ושומרים אותו כמאפיין.",
   "language": "he",
   "nodes": [
     {
@@ -76,7 +77,7 @@
       "text": "קיבלתי את הפרטים. מעביר אותך מיד לבעל העסק.\n\nאם אפשר, שלח גם תמונה של הבעיה כאן.",
       "assign_to_owner": true,
       "notify_owner": true,
-      "notify_message": "חירום! פנייה דחופה מ-{{emergency_name}} | טלפון: {{contact.phone}} | כתובת: {{emergency_address}} | בעיה: {{emergency_type}}"
+      "notify_message": "חירום! פנייה דחופה מ-{{emergency_name}} | טלפון: {{phone}} | כתובת: {{emergency_address}} | בעיה: {{emergency_type}}"
     },
     {
       "id": "regular_name",
@@ -135,7 +136,7 @@
       "title": "העברה לבעל העסק",
       "assign_to_owner": true,
       "notify_owner": true,
-      "notify_message": "פנייה רגילה מ-{{name}} | טלפון: {{contact.phone}} | כתובת: {{address}} | בעיה: {{issue}}"
+      "notify_message": "פנייה רגילה מ-{{name}} | טלפון: {{phone}} | כתובת: {{address}} | בעיה: {{issue}}"
     }
   ],
   "rules": {
