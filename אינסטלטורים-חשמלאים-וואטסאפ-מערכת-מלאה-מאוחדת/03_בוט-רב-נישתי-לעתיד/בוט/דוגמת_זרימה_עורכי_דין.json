@@ -10,7 +10,7 @@
     {"id": "name", "type": "question", "title": "שם", "question": "שם מלא", "field": "name", "input_type": "text"},
     {"id": "details", "type": "question", "title": "פרטים", "question": "תאר בקצרה את הפנייה (ללא פרטים רגישים מדי)", "field": "details", "input_type": "text"},
     {"id": "summary", "type": "message", "title": "סיכום", "text": "קיבלתי את הפרטים. אעביר למשרד.", "buttons": [{"id": "handoff", "text": "העבר לנציג"}]},
-    {"id": "handoff", "type": "handoff", "title": "העברה", "assign_to_owner": true, "notify_owner": true, "notify_message": "פניית עו״ד מ-{{name}} | טלפון: {{contact.phone}} | תחום: {{last_answer}} | פרטים: {{details}}"}
+    {"id": "handoff", "type": "handoff", "title": "העברה", "assign_to_owner": true, "notify_owner": true, "notify_message": "פניית עו״ד מ-{{name}} | טלפון: {{phone}} | תחום: {{last_answer}} | פרטים: {{details}}"}
   ],
   "rules": {"always_allow_human_handoff": true, "never_give_legal_advice": true}
 }

@@ -74,7 +74,7 @@
       "id": "emergency_handoff",
       "type": "handoff",
       "title": "העברה מיידית לחירום",
-      "text": "קיבלתי את הפרטים. מעביר אותך מיד לבעל העסק.\n\nאם אפשר, שלח גם תמונה של הבעיה כאן.",
+      "text": "קיבלתי את הפרטים. הפנייה עוברת עכשיו לבעל העסק, והוא יחזור אליך בהקדם.\n\nאם אפשר, שלח גם תמונה של הבעיה כאן.",
       "assign_to_owner": true,
       "notify_owner": true,
       "notify_message": "חירום! פנייה דחופה מ-{{emergency_name}} | טלפון: {{phone}} | כתובת: {{emergency_address}} | בעיה: {{emergency_type}}"
@@ -122,7 +122,7 @@
       "id": "regular_summary",
       "type": "message",
       "title": "סיכום והעברה",
-      "text": "קיבלתי את הפרטים:\nשם: {{name}}\nכתובת: {{address}}\nבעיה: {{issue}}\n\nאני מעביר אותך כעת לבעל העסק.",
+      "text": "קיבלתי את הפרטים:\nשם: {{name}}\nכתובת: {{address}}\nבעיה: {{issue}}\n\nהפנייה עוברת עכשיו לבעל העסק. הוא יחזור אליך בהקדם.",
       "buttons": [
         { "id": "handoff_regular", "text": "העבר לנציג" }
       ],

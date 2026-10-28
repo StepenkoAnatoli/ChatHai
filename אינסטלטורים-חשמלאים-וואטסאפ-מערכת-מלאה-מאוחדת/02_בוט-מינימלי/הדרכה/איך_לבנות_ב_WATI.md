@@ -31,7 +31,7 @@
 1. **Question** - `כדי להעביר אותך מהר - איך קוראים לך?` (Text) -> `emergency_name`
 2. **Question** - `מה הכתובת המלאה (עיר, רחוב, מספר בית)?` (Text) -> `emergency_address`
 3. **Human Handoff** (Assign to team/owner)
-   - **Message to customer:** `קיבלתי את הפרטים. מעביר אותך מיד לבעל העסק.\n\nאם אפשר, שלח גם תמונה של הבעיה כאן.`
+   - **Message to customer:** `קיבלתי את הפרטים. הפנייה עוברת עכשיו לבעל העסק, והוא יחזור אליך בהקדם.\n\nאם אפשר, שלח גם תמונה של הבעיה כאן.`
    - **Message to owner:** `חירום! פנייה דחופה מ-{{emergency_name}} | טלפון: {{phone}} | כתובת: {{emergency_address}} | בעיה: {{emergency_type}}`
 
    **את המשתנים בוחרים מהבורר שבצומת, לא מקלידים.** ב-WATI משתני צ'אט
