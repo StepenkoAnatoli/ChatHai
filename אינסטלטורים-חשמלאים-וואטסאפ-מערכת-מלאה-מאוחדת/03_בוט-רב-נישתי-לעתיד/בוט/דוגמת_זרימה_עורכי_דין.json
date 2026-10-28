@@ -2,6 +2,8 @@
   "name": "בוט לאיסוף פניות - עורכי דין",
   "description": "רק איסוף פרטים. ללא ייעוץ משפטי.",
   "type": "wati_chatbot_flow",
+  "importable": false,
+  "build_note": "תרשים לדוגמה בלבד - לא קובץ ייבוא. כשבאים לבנות נישה כזו, מגדירים בה את החיבורים כמו בקובץ של האינסטלטורים.",
   "language": "he",
   "nodes": [
     {"id": "start", "type": "message", "title": "ברכה", "text": "היי! באיזה תחום מדובר?", "buttons": [{"id": "traffic", "text": "תעבורה"},{"id": "realestate", "text": "נדל״ן"},{"id": "family", "text": "משפחה"},{"id": "other", "text": "אחר"}]},

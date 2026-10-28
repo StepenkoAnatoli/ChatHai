@@ -2,6 +2,8 @@
   "name": "בוט מינימלי - אינסטלטור/חשמלאי",
   "description": "איסוף פרטים + מיון חירום + העברה לבעל העסק. ללא מתן מחיר.",
   "type": "wati_chatbot_flow",
+  "importable": false,
+  "build_note": "קובץ תיאור בלבד - כל צומת וכל חיבור מתועדים כאן, אבל בונים את הזרימה ידנית ב-WATI. זה לא קובץ ייבוא של WATI או של Typebot.",
   "language": "he",
   "nodes": [
     {
@@ -12,7 +14,11 @@
       "buttons": [
         { "id": "emergency", "text": "חירום / דחוף" },
         { "id": "regular", "text": "פנייה רגילה" }
-      ]
+      ],
+      "button_targets": {
+        "emergency": "emergency_check",
+        "regular": "regular_name"
+      }
     },
     {
       "id": "emergency_check",
@@ -27,6 +33,14 @@
         { "id": "no_power", "text": "אין חשמל" },
         { "id": "emerg_other", "text": "אחר - דחוף" }
       ],
+      "button_targets": {
+        "leak": "emergency_type",
+        "burst": "emergency_type",
+        "no_water": "emergency_type",
+        "elec_emerg": "emergency_type",
+        "no_power": "emergency_type",
+        "emerg_other": "emergency_type"
+      },
       "next": "emergency_type"
     },
     {
@@ -43,7 +57,8 @@
       "title": "שם לחירום",
       "question": "כדי להעביר אותך מהר - איך קוראים לך?",
       "field": "emergency_name",
-      "input_type": "text"
+      "input_type": "text",
+      "next": "emergency_address"
     },
     {
       "id": "emergency_address",
@@ -51,7 +66,8 @@
       "title": "כתובת לחירום",
       "question": "מה הכתובת המלאה (עיר, רחוב, מספר בית)?",
       "field": "emergency_address",
-      "input_type": "text"
+      "input_type": "text",
+      "next": "emergency_handoff"
     },
     {
       "id": "emergency_handoff",
@@ -68,7 +84,8 @@
       "title": "שם",
       "question": "איך קוראים לך?",
       "field": "name",
-      "input_type": "text"
+      "input_type": "text",
+      "next": "regular_address"
     },
     {
       "id": "regular_address",
@@ -76,7 +93,8 @@
       "title": "כתובת",
       "question": "מה הכתובת? (עיר + רחוב + מספר בית)",
       "field": "address",
-      "input_type": "text"
+      "input_type": "text",
+      "next": "regular_issue"
     },
     {
       "id": "regular_issue",
@@ -84,7 +102,8 @@
       "title": "תיאור הבעיה",
       "question": "תאר בקצרה את הבעיה",
       "field": "issue",
-      "input_type": "text"
+      "input_type": "text",
+      "next": "regular_photo"
     },
     {
       "id": "regular_photo",
@@ -95,7 +114,8 @@
       "input_type": "media",
       "allow_skip": true,
       "skip_button": "אין תמונה",
-      "skip_value": "אין"
+      "skip_value": "אין",
+      "next": "regular_summary"
     },
     {
       "id": "regular_summary",
@@ -104,7 +124,10 @@
       "text": "קיבלתי את הפרטים:\nשם: {{name}}\nכתובת: {{address}}\nבעיה: {{issue}}\n\nאני מעביר אותך כעת לבעל העסק.",
       "buttons": [
         { "id": "handoff_regular", "text": "העבר לנציג" }
-      ]
+      ],
+      "button_targets": {
+        "handoff_regular": "handoff_regular_action"
+      }
     },
     {
       "id": "handoff_regular_action",
