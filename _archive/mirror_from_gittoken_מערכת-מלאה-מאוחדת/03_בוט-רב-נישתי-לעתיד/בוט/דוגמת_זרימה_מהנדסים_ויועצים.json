@@ -1,0 +1,16 @@
+﻿{
+  "name": "בוט לאיסוף פניות - מהנדסים/יועצים הנדסיים",
+  "description": "איסוף פניות מסודר כולל קבצים. ללא מתן מחיר.",
+  "type": "wati_chatbot_flow",
+  "language": "he",
+  "nodes": [
+    {"id": "start", "type": "message", "title": "ברכה", "text": "היי! איזה סוג פנייה?", "buttons": [{"id": "struct", "text": "בדיקת קונסטרוקציה"},{"id": "existing", "text": "דו״ח מצב קיים"},{"id": "permit", "text": "היתר/תוספת בנייה"},{"id": "other", "text": "אחר"}]},
+    {"id": "name", "type": "question", "title": "שם", "question": "שם מלא ליצירת קשר", "field": "name", "input_type": "text"},
+    {"id": "address", "type": "question", "title": "נכס", "question": "כתובת הנכס/פרויקט", "field": "address", "input_type": "text"},
+    {"id": "desc", "type": "question", "title": "תיאור", "question": "תאר בקצרה את הפנייה", "field": "desc", "input_type": "text"},
+    {"id": "files", "type": "question", "title": "קבצים", "question": "אם יש תוכניות/היתר/תמונות שלח כאן. אם אין הקש 'אין'.", "field": "files", "input_type": "media"},
+    {"id": "summary", "type": "message", "title": "סיכום", "text": "קיבלתי את הפרטים והקבצים. אעביר למהנדס לבדיקה.", "buttons": [{"id": "handoff", "text": "העבר לנציג"}]},
+    {"id": "handoff", "type": "handoff", "title": "העברה", "assign_to_owner": true, "notify_owner": true, "notify_message": "פניית מהנדס מ-{{name}} | טלפון: {{contact.phone}} | נכס: {{address}} | סוג: {{last_answer}} | תיאור: {{desc}}"}
+  ],
+  "rules": {"always_allow_human_handoff": true, "never_give_price": true}
+}

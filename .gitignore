@@ -1,7 +1,4 @@
-﻿# pre-consolidation copies of the same playbook - kept on disk, not in history
-_archive/
-
-# windows noise
+﻿# windows noise
 Thumbs.db
 desktop.ini
 *.tmp
