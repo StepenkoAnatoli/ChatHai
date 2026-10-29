@@ -1,0 +1,16 @@
+{
+  "name": "livechat-zero",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Live chat widget + agent dashboard + FAQ/AI bot. No dependencies, Node 22+.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "create-site": "node scripts/create-site.js",
+    "test": "node test/e2e.test.js && node test/bot.test.js && node test/ws-frames.test.js",
+    "test:browser": "python3 test/browser/ui_test.py"
+  }
+}
