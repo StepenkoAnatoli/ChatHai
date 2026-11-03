@@ -375,6 +375,44 @@ await test('Twilio adapter: Create Call request shape, XML-escaped TwiML, disabl
   assert.equal(await createCallBridge({ provider: 'webhook', webhookUrl: 'http://127.0.0.1:1/x', log: quiet }).bridge({ ownerPhone: '1', callerPhone: '2', siteName: 's' }), false, 'unreachable provider: false, no throw');
 });
 
+await test('report counts missed calls, replies, emergencies, callbacks and potential value', async () => {
+  reset();
+  const t = await boot();
+  assert.equal((await t.json('/api/report')).status, 401);
+  assert.equal((await t.put({ avgJobValue: -5 })).status, 400);
+  assert.equal((await t.put({ avgJobValue: 'abc' })).status, 400);
+  await t.put({ notifyWhatsapp: OWNER_ALERT, callbackPhone: OWNER_CALL, missedCallEnabled: true, avgJobValue: 450 });
+  const report = async (q = '') => (await t.json(`/api/report${q}`, { headers: t.auth })).body;
+  assert.equal((await report()).missedCalls, 0);
+
+  await t.missed({ caller: CALLER }); // answers with an emergency -> callback
+  await t.missed({ caller: '0551111111' }); // never answers
+  await t.missed({ caller: '0552222222' }); // asks an FAQ question only
+  await t.inbound(CALLER_INTL, 'יש נזילה!');
+  await until(() => t.conv(CALLER_INTL).callback === 'requested', 'callback');
+  await t.inbound('972552222222', 'מה שעות הפעילות שלכם?');
+  await until(() => t.conv('972552222222').messages.some((m) => m.from === 'visitor'), 'FAQ question');
+
+  // the owner answers the emergency: `urgent` clears but the report still counts it
+  const agent = new WebSocket(`ws://127.0.0.1:${t.s.port}/ws?role=agent&token=${t.login}`);
+  await new Promise((r) => (agent.onopen = r));
+  agent.send(JSON.stringify({ type: 'reply', convId: `demo:wa-${CALLER_INTL}`, text: 'בדרך' }));
+  await until(() => t.conv(CALLER_INTL).urgent === false, 'owner reply');
+  agent.close();
+
+  const r = await report();
+  assert.deepEqual(
+    [r.days, r.missedCalls, r.answeredByCaller, r.emergencies, r.callbacks, r.reached, r.avgJobValue, r.potentialValue],
+    [7, 3, 2, 1, 1, 1, 450, 450],
+  );
+  assert.equal((await report('?days=500')).days, 90, 'capped at 90 days');
+  assert.equal((await report('?days=abc')).days, 7);
+  t.conv(CALLER_INTL).missedCallAt = Date.now() - 8 * 86400000;
+  assert.equal((await report()).missedCalls, 2, 'older calls fall out of the window');
+  assert.equal((await report('?days=30')).missedCalls, 3);
+  await t.cleanup();
+});
+
 metaSrv.close();
 provSrv.close();
 console.log(`${passed} passed`);

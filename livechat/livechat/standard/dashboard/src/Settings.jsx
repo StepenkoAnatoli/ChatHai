@@ -4,8 +4,13 @@ import { api } from './api.js';
 export default function Settings({ token, site }) {
   const [faq, setFaq] = useState(null);
   const [settings, setSettings] = useState(null);
+  const [report, setReport] = useState(null);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    api('/api/report?days=7', token).then(setReport).catch(() => {});
+  }, [token]);
 
   useEffect(() => {
     Promise.all([api('/api/faq', token), api('/api/settings', token)])
@@ -43,6 +48,7 @@ export default function Settings({ token, site }) {
           missedCallText: settings.missedCallText,
           callbackPhone: settings.callbackPhone,
           autoCallback: settings.autoCallback,
+          avgJobValue: Number(settings.avgJobValue) || 0,
           allowedOrigins: settings.origins.split('\n').map((s) => s.trim()).filter(Boolean),
         },
       });
@@ -87,8 +93,21 @@ export default function Settings({ token, site }) {
         <textarea id="set-origins" value={settings.origins} onChange={set('origins')}></textarea>
       </div>
 
+      {report && report.missedCalls > 0 && (
+        <div className="panel">
+          <h3>7 הימים האחרונים</h3>
+          <p>
+            {report.missedCalls} שיחות שלא נענו, {report.answeredByCaller} לקוחות ענו בוואטסאפ, {report.emergencies} פניות חירום, {report.callbacks} חיוגים חוזרים,
+            {' '}{report.reached} לקוחות הגיעו אליכם.
+            {report.avgJobValue > 0 && <> שווי פוטנציאלי: <b>₪{report.potentialValue.toLocaleString('he-IL')}</b> (לפי ₪{report.avgJobValue.toLocaleString('he-IL')} לעבודה; זו הערכה ולא הכנסה בפועל).</>}
+          </p>
+        </div>
+      )}
+
       <div className="panel">
         <h3>שיחה שלא נענתה</h3>
+        <label htmlFor="set-job">שווי עבודה ממוצעת בשקלים (להערכת הפוטנציאל בדוח)</label>
+        <input id="set-job" type="number" min="0" dir="ltr" value={settings.avgJobValue || ''} onChange={set('avgJobValue')} />
         <p style={{ color: '#6b7280', fontSize: '14px' }}>כשמישהו מתקשר ואף אחד לא עונה, נשלחת לו הודעת וואטסאפ והבוט ממשיך את השיחה. פנייה דחופה או בקשה לשיחה מתריעה אליכם ומחייגת אליכם ואז אל הלקוח.</p>
         <label htmlFor="set-mc-on"><input id="set-mc-on" type="checkbox" checked={!!settings.missedCallEnabled} onChange={(e) => setSettings({ ...settings, missedCallEnabled: e.target.checked })} /> הפעלת השירות</label>
         {!settings.missedCallAvailable && <p style={{ color: '#b45309', fontSize: '13px' }}>השירות עדיין לא הוגדר בשרת (MISSED_CALL_SECRET, WHATSAPP_MISSED_TEMPLATE ופרטי וואטסאפ).</p>}

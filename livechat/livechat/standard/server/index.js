@@ -221,6 +221,7 @@ export function startServer({
     missedCallText: site.missedCallText ?? DEFAULT_MISSED_CALL_TEXT(site),
     callbackPhone: site.callbackPhone || '',
     autoCallback: site.autoCallback !== false,
+    avgJobValue: site.avgJobValue || 0,
     missedCallAvailable: !!(missedCallSecret && missedCallTemplate && notifier.waReady),
     callbackAvailable: callBridge.enabled,
   });
@@ -372,6 +373,25 @@ export function startServer({
       return json(res, 200, { conversations: store.listConversations(site.key).slice(0, 200).map((c) => summary(c, true)) });
     }
 
+    // What the missed-call service did for this site in the last N days (7 by default, up to 90).
+    // "reached" = the caller ended up with the owner (a callback was requested or a person answered in the chat).
+    // The shekel figure is potential, not revenue: reached callers x the average job value the owner entered.
+    if (route === 'GET /api/report') {
+      const days = Math.min(90, Math.max(1, Math.floor(Number(url.searchParams.get('days'))) || 7));
+      const since = Date.now() - days * 86400000;
+      const r = { days, missedCalls: 0, answeredByCaller: 0, emergencies: 0, callbacks: 0, reached: 0 };
+      for (const c of store.listConversations(site.key)) {
+        if (c.channel !== 'whatsapp' || !(c.missedCallAt >= since)) continue;
+        r.missedCalls += 1;
+        if (c.messages.some((m) => m.from === 'visitor')) r.answeredByCaller += 1;
+        if (c.hadEmergency) r.emergencies += 1;
+        if (c.callback === 'requested') r.callbacks += 1;
+        if (c.callback === 'requested' || c.messages.some((m) => m.from === 'agent')) r.reached += 1;
+      }
+      const avg = site.avgJobValue || 0;
+      return json(res, 200, { ...r, avgJobValue: avg, potentialValue: r.reached * avg });
+    }
+
     if (route === 'GET /api/faq') return json(res, 200, { faq: site.faq });
 
     if (route === 'PUT /api/faq') {
@@ -424,6 +444,11 @@ export function startServer({
       }
       if (body.missedCallEnabled !== undefined) site.missedCallEnabled = body.missedCallEnabled === true;
       if (body.autoCallback !== undefined) site.autoCallback = body.autoCallback === true;
+      if (body.avgJobValue !== undefined) {
+        const v = Number(body.avgJobValue);
+        if (!Number.isFinite(v) || v < 0 || v > 1000000) return json(res, 400, { error: 'שווי עבודה ממוצעת חייב להיות מספר בין 0 ל־1,000,000' });
+        site.avgJobValue = Math.round(v);
+      }
       if (body.missedCallText !== undefined) site.missedCallText = cleanStr(body.missedCallText, 500);
       if (origins) site.allowedOrigins = origins;
       store.save();
@@ -571,6 +596,7 @@ export function startServer({
     // so a worried visitor typing three messages does not get three identical replies.
     if (!conv.urgent && isEmergency(text)) {
       conv.urgent = true;
+      conv.hadEmergency = true; // `urgent` clears when a person answers; the report still needs to count it
       conv.needsHuman = true;
       conv.alertUrgent = true;
       const emsg = store.addMessage(conv, 'bot', site.emergencyReply ?? DEFAULT_EMERGENCY_REPLY);
