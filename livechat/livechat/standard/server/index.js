@@ -8,6 +8,8 @@ import { createStore, verifyPassword, hashPassword, normalizeOrigins } from './s
 import { DEFAULT_PRIVACY_NOTE, DEFAULT_EMERGENCY_REPLY } from './store.js';
 import { createNotifier, isEmail, normalizePhone } from './notify.js';
 import { matchFaq, aiReply, isEmergency } from './bot.js';
+import { createCallBridge } from './callbridge.js';
+import { safeEqual, verifyMetaSignature, extractWaMessages, wantsCallback, localPhone } from './missedcall.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(here, 'public');
@@ -25,6 +27,8 @@ const TYPES = {
 };
 
 const DUMMY_HASH = hashPassword('dummy-password');
+// Record of what the caller received. The words that really go out are in the template approved at Meta.
+const DEFAULT_MISSED_CALL_TEXT = (site) => `החמצנו את שיחתך אל ${site.name}. אפשר לכתוב כאן במה מדובר ונחזור אליך.`;
 
 export function startServer({
   port = Number(process.env.PORT) || 3000,
@@ -36,8 +40,18 @@ export function startServer({
   adminToken = process.env.ADMIN_TOKEN || '',
   distDir = process.env.DASHBOARD_DIST || DEFAULT_DIST,
   notifier = createNotifier(),
+  callBridge = createCallBridge(),
+  // Missed-call flow. The endpoint is off (404) until MISSED_CALL_SECRET is set.
+  missedCallSecret = process.env.MISSED_CALL_SECRET || '',
+  missedCallTemplate = process.env.WHATSAPP_MISSED_TEMPLATE || '', // approved template, one body variable: the business name
+  missedCallLang = process.env.WHATSAPP_MISSED_TEMPLATE_LANG || 'he',
+  waVerifyToken = process.env.WHATSAPP_VERIFY_TOKEN || '',
+  waAppSecret = process.env.WHATSAPP_APP_SECRET || '',
+  missedCallsPerMinute = Number(process.env.MISSED_CALLS_PER_MINUTE) || 30,
+  callbacksPerDay = Number(process.env.CALLBACKS_PER_DAY) || 20,
 } = {}) {
   if (adminToken && adminToken.length < 16) throw new Error('ADMIN_TOKEN חייב להכיל לפחות 16 תווים');
+  if (missedCallSecret && missedCallSecret.length < 16) throw new Error('MISSED_CALL_SECRET חייב להכיל לפחות 16 תווים');
 
   const store = createStore(dataFile);
   if (seedDemo && Object.keys(store.data.sites).length === 0) {
@@ -54,6 +68,10 @@ export function startServer({
   const queues = new Map(); // convId -> tail of the bot-reply chain
   const ipMsgs = new Map(); // ip -> recent visitor message times
   const ipNewConvs = new Map(); // ip -> recent new-conversation times
+  const missedStamps = new Map(); // 'all' | siteKey | siteKey:caller -> recent missed-call times
+  const callbackStamps = new Map(); // siteKey -> recent callback-bridge times
+  const seenWa = new Set(); // ids of WhatsApp messages already handled (Meta retries deliveries)
+  const waTails = new Map(); // convId -> tail of the chain of WhatsApp sends, so replies keep their order
 
   const privacyOf = (site) => (site.privacyNote === undefined ? DEFAULT_PRIVACY_NOTE : site.privacyNote);
   const send = (ws, payload) => {
@@ -71,6 +89,9 @@ export function startServer({
       humanTakeover: conv.humanTakeover,
       needsHuman: conv.needsHuman,
       urgent: !!conv.urgent,
+      channel: conv.channel || 'web',
+      phone: conv.phone || '',
+      callback: conv.callback || '',
       unread: conv.unread,
       online: (visitors.get(conv.id)?.size || 0) > 0,
       updatedAt: conv.updatedAt,
@@ -110,6 +131,25 @@ export function startServer({
           reject(e);
         }
       });
+      req.on('error', reject);
+    });
+  }
+
+  // Raw bytes, needed to check Meta's signature before anything is parsed.
+  function readRaw(req, limit) {
+    return new Promise((resolve, reject) => {
+      let size = 0;
+      const chunks = [];
+      req.on('data', (c) => {
+        size += c.length;
+        if (size > limit) {
+          reject(new Error('too large'));
+          req.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
+      req.on('end', () => resolve(Buffer.concat(chunks)));
       req.on('error', reject);
     });
   }
@@ -164,6 +204,26 @@ export function startServer({
   }
 
   const cleanStr = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+
+  const settingsOf = (site) => ({
+    name: site.name,
+    color: site.color,
+    greeting: site.greeting,
+    fallback: site.fallback,
+    allowedOrigins: site.allowedOrigins,
+    notifyEmail: site.notifyEmail || '',
+    notifyWhatsapp: site.notifyWhatsapp || '',
+    emergencyReply: site.emergencyReply ?? DEFAULT_EMERGENCY_REPLY,
+    privacyNote: privacyOf(site),
+    emailEnabled: notifier.enabled,
+    whatsappEnabled: notifier.whatsappEnabled,
+    missedCallEnabled: !!site.missedCallEnabled,
+    missedCallText: site.missedCallText ?? DEFAULT_MISSED_CALL_TEXT(site),
+    callbackPhone: site.callbackPhone || '',
+    autoCallback: site.autoCallback !== false,
+    missedCallAvailable: !!(missedCallSecret && missedCallTemplate && notifier.waReady),
+    callbackAvailable: callBridge.enabled,
+  });
 
   async function handleApi(req, res, url) {
     const route = `${req.method} ${url.pathname}`;
@@ -224,6 +284,78 @@ export function startServer({
       return json(res, 201, { key: created.key, name: created.name, password });
     }
 
+    // ---------- Missed call ----------
+    // A virtual-number provider (or n8n/Make in front of it) calls this when a call to the business was not answered.
+    // POST /api/missed-call?site=<siteKey>   header x-webhook-secret: <MISSED_CALL_SECRET>   body {"caller": "050-123-4567"}
+    if (route === 'POST /api/missed-call') {
+      if (!missedCallSecret) return json(res, 404, { error: 'לא נמצא' });
+      const ip = clientIp(req);
+      if (blocked(ip)) return json(res, 429, { error: 'יותר מדי ניסיונות כושלים. נסו שוב בעוד כמה דקות' });
+      const given = req.headers['x-webhook-secret'] || (req.headers.authorization || '').replace(/^Bearer /, '');
+      if (!safeEqual(given, missedCallSecret)) {
+        recordFailure(ip);
+        return json(res, 401, { error: 'הסוד של ה־webhook שגוי' });
+      }
+      if (!allow(missedStamps, 'all', 60000, missedCallsPerMinute)) return json(res, 429, { error: 'יותר מדי בקשות' });
+      const body = await readBody(req);
+      const site = store.getSite(cleanStr(url.searchParams.get('site') || body.site, 100));
+      if (!site || !site.missedCallEnabled) return json(res, 404, { error: 'האתר לא מוכר או שהשירות כבוי' });
+      if (!missedCallTemplate || !notifier.waReady) return json(res, 503, { error: 'וואטסאפ לא מוגדר בשרת' });
+      const rawCaller = body.caller ?? body.from;
+      const caller = typeof rawCaller === 'string' ? normalizePhone(rawCaller) : '';
+      if (!caller) return json(res, 400, { error: 'מספר המתקשר חסר או אינו מספר ישראלי תקין' });
+      // The owner calling their own line must not start a chat with themselves.
+      if (caller === normalizePhone(site.notifyWhatsapp || '') || caller === normalizePhone(site.callbackPhone || '')) {
+        return json(res, 200, { ok: true, sent: false, reason: 'owner' });
+      }
+      if (!allow(missedStamps, site.key, 86400000, 300)) return json(res, 429, { error: 'חריגה ממכסת היום לאתר' });
+      // One message per caller per hour: a caller who rings three times is still one conversation, and Meta bills per template.
+      const callerKey = `${site.key}:${caller}`;
+      if (!allow(missedStamps, callerKey, 3600000, 1)) return json(res, 200, { ok: true, sent: false, reason: 'recent' });
+      const sent = await notifier.sendTemplate(caller, missedCallTemplate, [site.name], missedCallLang);
+      if (!sent) {
+        missedStamps.get(callerKey)?.pop(); // let the provider's retry through
+        return json(res, 502, { error: 'שליחת הוואטסאפ למתקשר נכשלה' });
+      }
+      const conv = store.getConversation(site.key, `wa-${caller}`);
+      conv.channel = 'whatsapp';
+      conv.phone = caller;
+      conv.missedCallAt = Date.now();
+      const note = store.addMessage(conv, 'bot', site.missedCallText ?? DEFAULT_MISSED_CALL_TEXT(site));
+      toAgents(site.key, { type: 'message', convId: conv.id, message: note, conv: summary(conv) });
+      return json(res, 200, { ok: true, sent: true, conversationId: conv.id });
+    }
+
+    // Meta's webhook verification handshake (done once, when the callback URL is saved in the App Dashboard).
+    if (route === 'GET /api/whatsapp/webhook') {
+      if (!waVerifyToken) return json(res, 404, { error: 'לא נמצא' });
+      const q = url.searchParams;
+      if (q.get('hub.mode') !== 'subscribe' || !safeEqual(q.get('hub.verify_token') || '', waVerifyToken)) return json(res, 403, { error: 'אסימון אימות שגוי' });
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' });
+      return res.end(String(q.get('hub.challenge') || '').slice(0, 200));
+    }
+
+    // Messages the caller sends back on WhatsApp. Signed by Meta with the app secret; unsigned requests are refused.
+    if (route === 'POST /api/whatsapp/webhook') {
+      if (!waAppSecret) return json(res, 404, { error: 'לא נמצא' });
+      const raw = await readRaw(req, 3 * 1024 * 1024);
+      if (!verifyMetaSignature(raw, req.headers['x-hub-signature-256'], waAppSecret)) return json(res, 401, { error: 'חתימה שגויה' });
+      let payload;
+      try {
+        payload = JSON.parse(raw.toString('utf8'));
+      } catch {
+        return json(res, 400, { error: 'בקשה לא תקינה' });
+      }
+      json(res, 200, { ok: true }); // answer first: Meta retries anything slower or non-200 for days
+      for (const m of extractWaMessages(payload, notifier.waPhoneId)) {
+        if (seenWa.has(m.id)) continue;
+        seenWa.add(m.id);
+        if (seenWa.size > 5000) seenWa.delete(seenWa.values().next().value);
+        onWaMessage(m.from, m.text).catch((err) => console.error('whatsapp message handling failed', err));
+      }
+      return;
+    }
+
     if (route === 'POST /api/logout') {
       const header = req.headers.authorization || '';
       const token = header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -253,8 +385,7 @@ export function startServer({
     }
 
     if (route === 'GET /api/settings') {
-      const { name, color, greeting, fallback, allowedOrigins } = site;
-      return json(res, 200, { name, color, greeting, fallback, allowedOrigins, notifyEmail: site.notifyEmail || '', notifyWhatsapp: site.notifyWhatsapp || '', emergencyReply: site.emergencyReply ?? DEFAULT_EMERGENCY_REPLY, privacyNote: privacyOf(site), emailEnabled: notifier.enabled, whatsappEnabled: notifier.whatsappEnabled });
+      return json(res, 200, settingsOf(site));
     }
 
     if (route === 'PUT /api/settings') {
@@ -286,10 +417,17 @@ export function startServer({
       }
       if (body.emergencyReply !== undefined) site.emergencyReply = cleanStr(body.emergencyReply, 300);
       if (body.privacyNote !== undefined) site.privacyNote = cleanStr(body.privacyNote, 200);
+      if (body.callbackPhone !== undefined) {
+        const raw = typeof body.callbackPhone === 'string' ? body.callbackPhone.trim() : '';
+        if (raw && !normalizePhone(raw)) return json(res, 400, { error: 'מספר החיוג החוזר אינו תקין. יש לכתוב מספר ישראלי כמו 0501234567' });
+        site.callbackPhone = raw ? normalizePhone(raw) : '';
+      }
+      if (body.missedCallEnabled !== undefined) site.missedCallEnabled = body.missedCallEnabled === true;
+      if (body.autoCallback !== undefined) site.autoCallback = body.autoCallback === true;
+      if (body.missedCallText !== undefined) site.missedCallText = cleanStr(body.missedCallText, 500);
       if (origins) site.allowedOrigins = origins;
       store.save();
-      const { name, color, greeting, fallback, allowedOrigins } = site;
-      return json(res, 200, { name, color, greeting, fallback, allowedOrigins, notifyEmail: site.notifyEmail || '', notifyWhatsapp: site.notifyWhatsapp || '', emergencyReply: site.emergencyReply ?? DEFAULT_EMERGENCY_REPLY, privacyNote: privacyOf(site), emailEnabled: notifier.enabled, whatsappEnabled: notifier.whatsappEnabled });
+      return json(res, 200, settingsOf(site));
     }
 
     return json(res, 404, { error: 'לא נמצא' });
@@ -350,6 +488,61 @@ export function startServer({
     return tail;
   }
 
+  // Delivers a message to the visitor's browser and, for a WhatsApp conversation, to their phone as well.
+  function toCaller(conv, msg) {
+    toVisitors(conv.id, { type: 'message', message: msg });
+    if (conv.channel !== 'whatsapp' || msg.from === 'visitor') return;
+    const tail = (waTails.get(conv.id) || Promise.resolve()).then(async () => {
+      if (!(await notifier.sendText(conv.phone, msg.text))) console.error('לא ניתן לשלוח תשובה בוואטסאפ (חלון 24 השעות נסגר או שגיאת שליחה)');
+    });
+    const safe = tail.catch(() => {});
+    waTails.set(conv.id, safe);
+    safe.then(() => {
+      if (waTails.get(conv.id) === safe) waTails.delete(conv.id);
+    });
+  }
+
+  // A caller wrote back on WhatsApp. Only people we messaged first (a missed call) get a conversation:
+  // anyone else writing to the number is ignored, so the number cannot be used to flood the dashboard.
+  async function onWaMessage(from, text) {
+    const phone = normalizePhone(from);
+    if (!phone) return;
+    let conv = null;
+    for (const key of Object.keys(store.data.sites)) {
+      const c = store.data.conversations[`${key}:wa-${phone}`];
+      if (c && (!conv || c.updatedAt > conv.updatedAt)) conv = c;
+    }
+    const site = conv && store.getSite(conv.siteKey);
+    if (!site || !allow(ipMsgs, `wa:${phone}`, 60000, 20)) return;
+    await onVisitorMessage(site, conv, text);
+  }
+
+  // The caller is "ready" for a person when it is an emergency, the bot could not answer, or they asked to be called.
+  // Rings the owner first; the provider connects the caller when the owner picks up. At most once per 30 minutes per chat.
+  async function maybeCallback(site, conv, reason) {
+    if (conv.channel !== 'whatsapp' || site.autoCallback === false || !callBridge.enabled) return;
+    if (Date.now() - (conv.callbackAt || 0) < 30 * 60 * 1000) return;
+    const ownerPhone = normalizePhone(site.callbackPhone || site.notifyWhatsapp || '');
+    if (!ownerPhone || ownerPhone === conv.phone) return;
+    if (!allow(callbackStamps, site.key, 86400000, callbacksPerDay)) {
+      conv.callback = 'limit';
+      return;
+    }
+    conv.callbackAt = Date.now();
+    const ok = await callBridge.bridge({ ownerPhone, callerPhone: conv.phone, siteName: site.name, reason });
+    if (!ok) {
+      conv.callbackAt = 0;
+      callbackStamps.get(site.key)?.pop();
+      conv.callback = 'failed';
+      toAgents(site.key, { type: 'conversation', conv: summary(conv) });
+      return;
+    }
+    conv.callback = 'requested';
+    const msg = store.addMessage(conv, 'bot', 'בעל העסק מקבל את הפרטים ויתקשר אליך בדקות הקרובות.');
+    toCaller(conv, msg);
+    toAgents(site.key, { type: 'message', convId: conv.id, message: msg, conv: summary(conv) });
+  }
+
   async function onVisitorMessage(site, conv, text) {
     const msg = store.addMessage(conv, 'visitor', text);
     toVisitors(conv.id, { type: 'message', message: msg });
@@ -357,11 +550,17 @@ export function startServer({
     await enqueue(conv.id, () => botRespond(site, conv, text));
     // An emergency is sent to the owner even when the dashboard is open: someone may have left it on a desk.
     // Otherwise, nobody is watching the dashboard and the bot could not help: tell the owner.
+    // For a WhatsApp conversation the owner cannot see who it is, so the caller's number leads the alert.
+    const alertText = conv.phone ? `${localPhone(conv.phone)}: ${text}` : text;
+    const asksCall = conv.channel === 'whatsapp' && wantsCallback(text);
     if (conv.alertUrgent) {
       conv.alertUrgent = false;
-      notifier.notify(site, conv, text, { urgent: true }).catch(() => {});
-    } else if ((conv.needsHuman || conv.humanTakeover) && !(agents.get(site.key)?.size)) {
-      notifier.notify(site, conv, text).catch(() => {});
+      notifier.notify(site, conv, alertText, { urgent: true }).catch(() => {});
+    } else if ((conv.needsHuman || conv.humanTakeover || asksCall) && !(agents.get(site.key)?.size)) {
+      notifier.notify(site, conv, alertText).catch(() => {});
+    }
+    if (conv.channel === 'whatsapp' && !conv.humanTakeover && (conv.urgent || conv.needsHuman || asksCall)) {
+      await maybeCallback(site, conv, conv.urgent ? 'urgent' : asksCall ? 'requested' : 'needs_human');
     }
   }
 
@@ -375,7 +574,7 @@ export function startServer({
       conv.needsHuman = true;
       conv.alertUrgent = true;
       const emsg = store.addMessage(conv, 'bot', site.emergencyReply ?? DEFAULT_EMERGENCY_REPLY);
-      toVisitors(conv.id, { type: 'message', message: emsg });
+      toCaller(conv, emsg);
       toAgents(site.key, { type: 'message', convId: conv.id, message: emsg, conv: summary(conv) });
       return;
     }
@@ -395,7 +594,7 @@ export function startServer({
       return;
     }
     const botMsg = store.addMessage(conv, 'bot', answer);
-    toVisitors(conv.id, { type: 'message', message: botMsg });
+    toCaller(conv, botMsg);
     toAgents(site.key, { type: 'message', convId: conv.id, message: botMsg, conv: summary(conv) });
   }
 
@@ -437,7 +636,7 @@ export function startServer({
         conv.urgent = false;
         conv.unread = 0;
         const msg = store.addMessage(conv, 'agent', text);
-        toVisitors(conv.id, { type: 'message', message: msg });
+        toCaller(conv, msg);
         toAgents(site.key, { type: 'message', convId: conv.id, message: msg, conv: summary(conv) });
       } else if (data.type === 'read') {
         conv.unread = 0;
@@ -524,7 +723,8 @@ export function startServer({
     if (role === 'visitor') {
       const site = store.getSite(url.searchParams.get('key') || '');
       const vid = url.searchParams.get('vid') || '';
-      if (!site || !/^[A-Za-z0-9_-]{8,64}$/.test(vid)) return reject(socket, 400, 'Bad Request');
+      // wa-… ids belong to WhatsApp callers: a browser must not be able to join (and read) their conversation.
+      if (!site || !/^[A-Za-z0-9_-]{8,64}$/.test(vid) || vid.startsWith('wa-')) return reject(socket, 400, 'Bad Request');
       const origin = req.headers.origin;
       if (site.allowedOrigins?.length && !site.allowedOrigins.includes(origin)) return reject(socket, 403, 'Forbidden');
       const ip = clientIp(req);
@@ -547,6 +747,7 @@ export function startServer({
     for (const [t, e] of tokens) if (e.exp < now) tokens.delete(t);
     for (const [ip, r] of loginAttempts) if (r.reset <= now) loginAttempts.delete(ip);
     for (const [ip, arr] of ipMsgs) if (!arr.length || arr[arr.length - 1] < now - 60000) ipMsgs.delete(ip);
+    for (const m of [missedStamps, callbackStamps]) for (const [k, arr] of m) if (!arr.length || arr[arr.length - 1] < now - 86400000) m.delete(k);
     for (const [ip, arr] of ipNewConvs) if (!arr.length || arr[arr.length - 1] < now - 3600000) ipNewConvs.delete(ip);
     for (const [id, st] of msgStamps) {
       if (!visitors.get(id)?.size && (!st.length || st[st.length - 1] < now - 60000)) msgStamps.delete(id);

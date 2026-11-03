@@ -37,24 +37,18 @@ export function createNotifier({
   const last = new Map(); // convId -> time of the last email for that conversation
   const enabled = Boolean(apiKey && from);
   const whatsappEnabled = Boolean(waToken && waPhoneId && waTemplate);
+  const waReady = Boolean(waToken && waPhoneId); // enough to send other templates and replies
 
   // Body variables in a template may not contain newlines, tabs or 4+ spaces.
   const waText = (s) => oneLine(s).replace(/\s{2,}/g, ' ').slice(0, 300);
 
-  async function sendWhatsapp(site, conv, text, urgent) {
-    const to = normalizePhone(site.notifyWhatsapp || '');
-    if (!whatsappEnabled || !to) return false;
-    const body = `${urgent ? 'דחוף! ' : ''}${oneLine(site.name)}: ${text}`;
+  // One POST to the Cloud API "messages" edge. Never throws; returns true when Meta answered 2xx.
+  async function waPost(payload) {
     try {
       const res = await fetch(`${waApiUrl.replace(/\/$/, '')}/${waPhoneId}/messages`, {
         method: 'POST',
         headers: { authorization: `Bearer ${waToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          to,
-          type: 'template',
-          template: { name: waTemplate, language: { code: waLang }, components: [{ type: 'body', parameters: [{ type: 'text', text: waText(body) }] }] },
-        }),
+        body: JSON.stringify({ messaging_product: 'whatsapp', ...payload }),
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) {
@@ -66,6 +60,25 @@ export function createNotifier({
       log.error(`שליחת וואטסאפ נכשלה: ${err.message}`);
       return false;
     }
+  }
+
+  // Approved template with the given body variables. `to` must already be normalised.
+  function sendTemplate(to, template, params = [], lang = waLang) {
+    if (!waReady || !to || !template) return Promise.resolve(false);
+    const components = params.length ? [{ type: 'body', parameters: params.map((p) => ({ type: 'text', text: waText(p) })) }] : [];
+    return waPost({ to, type: 'template', template: { name: template, language: { code: lang }, components } });
+  }
+
+  // Free-form text. Meta only delivers it inside the 24-hour window that opens when the user writes to the business.
+  function sendText(to, body) {
+    if (!waReady || !to) return Promise.resolve(false);
+    return waPost({ to, type: 'text', text: { body: String(body).slice(0, 4000) } });
+  }
+
+  async function sendWhatsapp(site, conv, text, urgent) {
+    const to = normalizePhone(site.notifyWhatsapp || '');
+    if (!whatsappEnabled || !to) return false;
+    return sendTemplate(to, waTemplate, [`${urgent ? 'דחוף! ' : ''}${oneLine(site.name)}: ${text}`]);
   }
 
   // Returns true when an email was sent. Never throws: a mail problem must not break the chat.
@@ -109,5 +122,5 @@ export function createNotifier({
     }
   }
 
-  return { notify, enabled, whatsappEnabled };
+  return { notify, enabled, whatsappEnabled, waReady, waPhoneId, sendTemplate, sendText };
 }

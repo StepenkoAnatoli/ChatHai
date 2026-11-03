@@ -13,7 +13,7 @@
     "start": "node server/index.js",
     "dev:server": "node --watch server/index.js",
     "dev:dashboard": "npm --prefix dashboard run dev",
-    "test": "node test/e2e.test.js && node test/bot.test.js && node test/ws-frames.test.js && node test/emergency.test.js",
+    "test": "node test/e2e.test.js && node test/bot.test.js && node test/ws-frames.test.js && node test/emergency.test.js && node test/missedcall.test.js",
     "test:browser": "python3 test/browser/ui_test.py",
     "create-site": "node server/scripts/create-site.js"
   }
