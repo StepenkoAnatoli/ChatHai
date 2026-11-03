@@ -1,0 +1,20 @@
+{
+  "name": "livechat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Live chat widget + React agent dashboard + FAQ/Claude bot (Node, ws, React/Vite).",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "npm --prefix server install && npm --prefix dashboard install",
+    "build": "npm --prefix dashboard run build",
+    "start": "node server/index.js",
+    "dev:server": "node --watch server/index.js",
+    "dev:dashboard": "npm --prefix dashboard run dev",
+    "test": "node test/e2e.test.js && node test/bot.test.js && node test/ws-frames.test.js && node test/emergency.test.js",
+    "test:browser": "python3 test/browser/ui_test.py",
+    "create-site": "node server/scripts/create-site.js"
+  }
+}

@@ -1,0 +1,516 @@
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { createStore, verifyPassword, hashPassword, normalizeOrigins } from './store.js';
+import { DEFAULT_PRIVACY_NOTE } from './store.js';
+import { createNotifier, isEmail } from './notify.js';
+import { matchFaq, aiReply } from './bot.js';
+import { acceptUpgrade, rejectUpgrade } from './ws.js';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC = path.join(here, 'public');
+
+const STATIC = {
+  '/': ['dashboard.html', 'text/html; charset=utf-8'],
+  '/dashboard.js': ['dashboard.js', 'text/javascript; charset=utf-8'],
+  '/widget.js': ['widget.js', 'text/javascript; charset=utf-8'],
+  '/demo': ['demo.html', 'text/html; charset=utf-8'],
+};
+
+const DUMMY_HASH = hashPassword('dummy-password');
+
+export function startServer({
+  port = Number(process.env.PORT) || 3000,
+  dataFile = process.env.DATA_FILE || path.join(here, 'data.json'),
+  seedDemo = process.env.SEED_DEMO ? process.env.SEED_DEMO === '1' : process.env.NODE_ENV !== 'production',
+  trustProxy = process.env.TRUST_PROXY === '1',
+  ipMessagesPerMinute = Number(process.env.IP_MESSAGES_PER_MINUTE) || 120,
+  ipNewConversationsPerHour = Number(process.env.IP_NEW_CONVERSATIONS_PER_HOUR) || 30,
+  adminToken = process.env.ADMIN_TOKEN || '',
+  notifier = createNotifier(),
+} = {}) {
+  if (adminToken && adminToken.length < 16) throw new Error('ADMIN_TOKEN חייב להכיל לפחות 16 תווים');
+  const store = createStore(dataFile);
+  if (seedDemo && Object.keys(store.data.sites).length === 0) {
+    store.createSite({ name: 'חנות הדגמה', key: 'demo', password: 'demo123' });
+    console.log('נוצר אתר הדגמה: מפתח "demo", סיסמה "demo123". יש למחוק או להחליף אותו לפני עלייה לאוויר.');
+  }
+
+  const tokens = new Map(); // token -> { siteKey, exp }
+  const agents = new Map(); // siteKey -> Set<ws>
+  const visitors = new Map(); // convId -> Set<ws>
+  const sockets = new Set();
+  const loginAttempts = new Map(); // ip -> { count, reset } (failed attempts only)
+  const msgStamps = new Map(); // convId -> timestamps of recent visitor messages
+  const queues = new Map(); // convId -> tail of the bot-reply chain
+  const ipMsgs = new Map(); // ip -> recent visitor message times
+  const ipNewConvs = new Map(); // ip -> recent new-conversation times
+
+  const privacyOf = (site) => (site.privacyNote === undefined ? DEFAULT_PRIVACY_NOTE : site.privacyNote);
+  const send = (ws, payload) => ws.send(JSON.stringify(payload));
+  const toAgents = (siteKey, payload) => (agents.get(siteKey) || new Set()).forEach((ws) => send(ws, payload));
+  const toVisitors = (convId, payload) => (visitors.get(convId) || new Set()).forEach((ws) => send(ws, payload));
+
+  function summary(conv, withMessages = false) {
+    const last = conv.messages[conv.messages.length - 1];
+    return {
+      id: conv.id,
+      visitorId: conv.visitorId,
+      status: conv.status,
+      humanTakeover: conv.humanTakeover,
+      needsHuman: conv.needsHuman,
+      unread: conv.unread,
+      online: (visitors.get(conv.id)?.size || 0) > 0,
+      updatedAt: conv.updatedAt,
+      lastMessage: last ? last.text.slice(0, 120) : '',
+      ...(withMessages ? { messages: conv.messages.slice(-100) } : {}),
+    };
+  }
+
+  // ---------- HTTP ----------
+  function json(res, status, body, cors = false) {
+    const data = JSON.stringify(body);
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      ...(cors ? { 'access-control-allow-origin': '*' } : {}),
+    });
+    res.end(data);
+  }
+
+  function readBody(req) {
+    return new Promise((resolve, reject) => {
+      let size = 0;
+      const chunks = [];
+      req.on('data', (c) => {
+        size += c.length;
+        if (size > 100 * 1024) {
+          reject(new Error('too large'));
+          req.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
+      req.on('end', () => {
+        try {
+          resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {});
+        } catch (e) {
+          reject(e);
+        }
+      });
+      req.on('error', reject);
+    });
+  }
+
+  function authSite(req) {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+    const entry = tokens.get(token);
+    if (!entry || entry.exp < Date.now()) return null;
+    return store.getSite(entry.siteKey);
+  }
+
+  // Only FAILED attempts count, per client IP. Behind a reverse proxy set TRUST_PROXY=1 so the real client
+  // address (the last X-Forwarded-For entry, which your own proxy appends) is used instead of the proxy's.
+  function clientIp(req) {
+    if (trustProxy) {
+      const parts = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (parts.length) return parts[parts.length - 1];
+    }
+    return req.socket.remoteAddress;
+  }
+
+  function blocked(ip) {
+    const rec = loginAttempts.get(ip);
+    return !!rec && rec.reset > Date.now() && rec.count >= 10;
+  }
+
+  function recordFailure(ip) {
+    const now = Date.now();
+    const rec = loginAttempts.get(ip);
+    if (!rec || rec.reset <= now) loginAttempts.set(ip, { count: 1, reset: now + 5 * 60 * 1000 });
+    else rec.count += 1;
+  }
+
+  // Only a JSON object is a valid message. `null`, numbers, strings and arrays are valid JSON too,
+  // and would otherwise crash the handlers below (TypeError on null.type).
+  function parseMsg(raw) {
+    const d = JSON.parse(raw);
+    if (!d || typeof d !== 'object' || Array.isArray(d)) throw new Error('not an object');
+    return d;
+  }
+
+  // Sliding-window counter: returns true (and counts the hit) while under the limit.
+  function allow(map, key, windowMs, max) {
+    const now = Date.now();
+    const arr = map.get(key) || [];
+    while (arr.length && arr[0] < now - windowMs) arr.shift();
+    map.set(key, arr);
+    if (arr.length >= max) return false;
+    arr.push(now);
+    return true;
+  }
+
+  const cleanStr = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+
+  async function handleApi(req, res, url) {
+    const route = `${req.method} ${url.pathname}`;
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, OPTIONS',
+        'access-control-allow-headers': 'content-type',
+      });
+      return res.end();
+    }
+
+    if (route === 'GET /api/site-config') {
+      const site = store.getSite(url.searchParams.get('key') || '');
+      if (!site) return json(res, 404, { error: 'אתר לא מוכר' }, true);
+      return json(res, 200, { name: site.name, color: site.color, greeting: site.greeting, privacyNote: privacyOf(site) }, true);
+    }
+
+    if (route === 'POST /api/login') {
+      const ip = clientIp(req);
+      if (blocked(ip)) return json(res, 429, { error: 'יותר מדי ניסיונות כושלים. נסו שוב בעוד כמה דקות' });
+      const body = await readBody(req);
+      const site = store.getSite(cleanStr(body.siteKey, 100));
+      const ok = verifyPassword(cleanStr(body.password, 200), site ? site.passwordHash : DUMMY_HASH);
+      if (!site || !ok) {
+        recordFailure(ip);
+        return json(res, 401, { error: 'מפתח האתר או הסיסמה שגויים' });
+      }
+      const token = crypto.randomBytes(24).toString('base64url');
+      tokens.set(token, { siteKey: site.key, exp: Date.now() + 12 * 3600 * 1000 });
+      return json(res, 200, { token, site: { key: site.key, name: site.name } });
+    }
+
+    // Create a client site on a running server. Disabled unless ADMIN_TOKEN is set.
+    if (route === 'POST /api/admin/sites') {
+      if (!adminToken) return json(res, 404, { error: 'לא נמצא' });
+      const ip = clientIp(req);
+      if (blocked(ip)) return json(res, 429, { error: 'יותר מדי ניסיונות כושלים. נסו שוב בעוד כמה דקות' });
+      const given = (req.headers.authorization || '').replace(/^Bearer /, '');
+      const digest = (s) => crypto.createHash('sha256').update(s).digest();
+      if (!crypto.timingSafeEqual(digest(given), digest(adminToken))) {
+        recordFailure(ip);
+        return json(res, 401, { error: 'אסימון המנהל שגוי' });
+      }
+      const body = await readBody(req);
+      const name = cleanStr(body.name, 80);
+      if (!name) return json(res, 400, { error: 'חובה למלא שם' });
+      const password = cleanStr(body.password, 200) || crypto.randomBytes(9).toString('base64url');
+      if (password.length < 8) return json(res, 400, { error: 'הסיסמה חייבת להכיל לפחות 8 תווים' });
+      let origins;
+      try {
+        origins = normalizeOrigins(body.allowedOrigins);
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+      const created = store.createSite({ name, password, allowedOrigins: origins });
+      return json(res, 201, { key: created.key, name: created.name, password });
+    }
+
+    if (route === 'POST /api/logout') {
+      const header = req.headers.authorization || '';
+      const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+      const entry = tokens.get(token);
+      tokens.delete(token);
+      if (entry) (agents.get(entry.siteKey) || new Set()).forEach((ws) => ws.authToken === token && ws.close(1008));
+      return json(res, 200, { ok: true });
+    }
+
+    const site = authSite(req);
+    if (!site) return json(res, 401, { error: 'לא מחוברים' });
+
+    if (route === 'GET /api/conversations') {
+      return json(res, 200, { conversations: store.listConversations(site.key).slice(0, 200).map((c) => summary(c, true)) });
+    }
+
+    if (route === 'GET /api/faq') return json(res, 200, { faq: site.faq });
+
+    if (route === 'PUT /api/faq') {
+      const body = await readBody(req);
+      if (!Array.isArray(body.faq) || body.faq.length > 100) return json(res, 400, { error: 'רשימת השאלות הנפוצות חייבת להכיל עד 100 פריטים' });
+      site.faq = body.faq
+        .map((f) => ({ q: cleanStr(f?.q, 300), a: cleanStr(f?.a, 1500), keywords: cleanStr(f?.keywords, 300) }))
+        .filter((f) => f.q && f.a);
+      store.save();
+      return json(res, 200, { faq: site.faq });
+    }
+
+    if (route === 'GET /api/settings') {
+      const { name, color, greeting, fallback, allowedOrigins } = site;
+      return json(res, 200, { name, color, greeting, fallback, allowedOrigins, notifyEmail: site.notifyEmail || '', privacyNote: privacyOf(site), emailEnabled: notifier.enabled });
+    }
+
+    if (route === 'PUT /api/settings') {
+      const body = await readBody(req);
+      let origins = null;
+      if (Array.isArray(body.allowedOrigins)) {
+        try {
+          origins = normalizeOrigins(body.allowedOrigins);
+        } catch (e) {
+          return json(res, 400, { error: e.message });
+        }
+      }
+      if (body.color !== undefined) {
+        if (!/^#[0-9a-fA-F]{6}$/.test(body.color)) return json(res, 400, { error: 'הצבע חייב להיות בפורמט כמו #2563eb' });
+        site.color = body.color;
+      }
+      if (body.name !== undefined && cleanStr(body.name, 80)) site.name = cleanStr(body.name, 80);
+      if (body.greeting !== undefined) site.greeting = cleanStr(body.greeting, 300);
+      if (body.fallback !== undefined) site.fallback = cleanStr(body.fallback, 300);
+      if (body.notifyEmail !== undefined) {
+        const e = typeof body.notifyEmail === 'string' ? body.notifyEmail.trim() : '';
+        if (e && !isEmail(e)) return json(res, 400, { error: 'כתובת המייל להתראות אינה תקינה' });
+        site.notifyEmail = e;
+      }
+      if (body.privacyNote !== undefined) site.privacyNote = cleanStr(body.privacyNote, 200);
+      if (origins) site.allowedOrigins = origins;
+      store.save();
+      const { name, color, greeting, fallback, allowedOrigins } = site;
+      return json(res, 200, { name, color, greeting, fallback, allowedOrigins, notifyEmail: site.notifyEmail || '', privacyNote: privacyOf(site), emailEnabled: notifier.enabled });
+    }
+
+    return json(res, 404, { error: 'לא נמצא' });
+  }
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
+      const entry = STATIC[url.pathname];
+      if (req.method === 'GET' && entry) {
+        const file = fs.readFileSync(path.join(PUBLIC, entry[0]));
+        res.writeHead(200, {
+          'content-type': entry[1],
+          'cache-control': 'no-cache',
+          'x-content-type-options': 'nosniff',
+          'x-frame-options': 'DENY',
+          'content-security-policy': "frame-ancestors 'none'",
+        });
+        return res.end(file);
+      }
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      res.end('Not found');
+    } catch (err) {
+      if (!res.headersSent) json(res, err.message === 'too large' ? 413 : 400, { error: 'בקשה לא תקינה' });
+      else res.end();
+    }
+  });
+
+  // ---------- WebSocket ----------
+  // Bot replies for one conversation run one at a time, in order, so answers cannot overtake each other.
+  function enqueue(id, task) {
+    const tail = (queues.get(id) || Promise.resolve()).then(task);
+    const safe = tail.catch(() => {});
+    queues.set(id, safe);
+    safe.then(() => {
+      if (queues.get(id) === safe) queues.delete(id);
+    });
+    return tail;
+  }
+
+  async function onVisitorMessage(site, conv, text) {
+    const msg = store.addMessage(conv, 'visitor', text);
+    toVisitors(conv.id, { type: 'message', message: msg });
+    toAgents(site.key, { type: 'message', convId: conv.id, message: msg, conv: summary(conv) });
+    await enqueue(conv.id, () => botRespond(site, conv, text));
+    // Nobody is watching the dashboard and the bot could not help: tell the site owner by email.
+    if ((conv.needsHuman || conv.humanTakeover) && !(agents.get(site.key)?.size)) {
+      notifier.notify(site, conv, text).catch(() => {});
+    }
+  }
+
+  async function botRespond(site, conv, text) {
+    if (conv.humanTakeover) return;
+
+    let answer = matchFaq(site.faq, text)?.a || null;
+    if (!answer) answer = await aiReply(site, conv.messages);
+    // A person may have joined while the AI was thinking: never talk over them.
+    if (conv.humanTakeover) return;
+
+    if (answer) {
+      conv.needsHuman = false;
+    } else if (!conv.needsHuman) {
+      conv.needsHuman = true;
+      answer = site.fallback;
+    } else {
+      toAgents(site.key, { type: 'conversation', conv: summary(conv) });
+      return;
+    }
+    const botMsg = store.addMessage(conv, 'bot', answer);
+    toVisitors(conv.id, { type: 'message', message: botMsg });
+    toAgents(site.key, { type: 'message', convId: conv.id, message: botMsg, conv: summary(conv) });
+  }
+
+  server.on('upgrade', (req, socket) => {
+    let url;
+    try {
+      url = new URL(req.url, 'http://localhost');
+    } catch {
+      // e.g. a request for "//": new URL() throws, and an exception here would take the whole server down
+      return socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    }
+    if (url.pathname !== '/ws') return rejectUpgrade(socket, 404, 'Not Found');
+    const role = url.searchParams.get('role');
+
+    if (role === 'agent') {
+      const entry = tokens.get(url.searchParams.get('token') || '');
+      const site = entry && entry.exp > Date.now() ? store.getSite(entry.siteKey) : null;
+      if (!site) return rejectUpgrade(socket, 401, 'Unauthorized');
+      const ws = acceptUpgrade(req, socket);
+      if (!ws) return;
+      sockets.add(ws);
+      ws.authToken = url.searchParams.get('token');
+      if (!agents.has(site.key)) agents.set(site.key, new Set());
+      agents.get(site.key).add(ws);
+      ws.on('close', () => {
+        sockets.delete(ws);
+        agents.get(site.key)?.delete(ws);
+      });
+      ws.on('message', (raw) => {
+        let data;
+        try {
+          data = parseMsg(raw);
+        } catch {
+          return;
+        }
+        const conv = store.findConversation(site.key, cleanStr(data.convId, 200));
+        if (!conv) return;
+        if (data.type === 'reply') {
+          const text = cleanStr(data.text, 2000);
+          if (!text) return;
+          conv.humanTakeover = true;
+          conv.needsHuman = false;
+          conv.unread = 0;
+          const msg = store.addMessage(conv, 'agent', text);
+          toVisitors(conv.id, { type: 'message', message: msg });
+          toAgents(site.key, { type: 'message', convId: conv.id, message: msg, conv: summary(conv) });
+        } else if (data.type === 'read') {
+          conv.unread = 0;
+          store.save();
+          toAgents(site.key, { type: 'conversation', conv: summary(conv) });
+        } else if (data.type === 'close') {
+          conv.status = 'closed';
+          conv.humanTakeover = false;
+          conv.needsHuman = false;
+          conv.unread = 0;
+          store.save();
+          toAgents(site.key, { type: 'conversation', conv: summary(conv) });
+        }
+      });
+      return;
+    }
+
+    if (role === 'visitor') {
+      const site = store.getSite(url.searchParams.get('key') || '');
+      const vid = url.searchParams.get('vid') || '';
+      if (!site || !/^[A-Za-z0-9_-]{8,64}$/.test(vid)) return rejectUpgrade(socket, 400, 'Bad Request');
+      const origin = req.headers.origin;
+      if (site.allowedOrigins?.length && !site.allowedOrigins.includes(origin)) return rejectUpgrade(socket, 403, 'Forbidden');
+      const ip = clientIp(req);
+      const ws = acceptUpgrade(req, socket);
+      if (!ws) return;
+      sockets.add(ws);
+      const convId = `${site.key}:${vid}`;
+      if (!visitors.has(convId)) visitors.set(convId, new Set());
+      visitors.get(convId).add(ws);
+
+      const existing = store.data.conversations[convId];
+      send(ws, { type: 'history', messages: existing ? existing.messages.slice(-100) : [], humanTakeover: !!existing?.humanTakeover });
+      if (existing) toAgents(site.key, { type: 'conversation', conv: summary(existing) });
+
+      const stamps = msgStamps.get(convId) || (msgStamps.set(convId, []), msgStamps.get(convId));
+      ws.on('close', () => {
+        sockets.delete(ws);
+        visitors.get(convId)?.delete(ws);
+        const conv = store.data.conversations[convId];
+        if (conv) toAgents(site.key, { type: 'conversation', conv: summary(conv) });
+      });
+      ws.on('message', async (raw) => {
+        let data;
+        try {
+          data = parseMsg(raw);
+        } catch {
+          return;
+        }
+        if (data.type !== 'message') return;
+        const text = cleanStr(data.text, 2000);
+        if (!text) return;
+        const now = Date.now();
+        while (stamps.length && stamps[0] < now - 60000) stamps.shift();
+        if (stamps.length >= 20) return send(ws, { type: 'error', code: 'rate_limited' });
+        stamps.push(now);
+        // Limits per client address, so one machine cannot create endless conversations (each is stored forever)
+        // or run up AI costs by opening many connections.
+        if (!allow(ipMsgs, ip, 60000, ipMessagesPerMinute)) return send(ws, { type: 'error', code: 'rate_limited' });
+        if (!store.data.conversations[convId] && !allow(ipNewConvs, ip, 3600000, ipNewConversationsPerHour)) {
+          return send(ws, { type: 'error', code: 'rate_limited' });
+        }
+        const conv = store.getConversation(site.key, vid);
+        try {
+          await onVisitorMessage(site, conv, text);
+        } catch (err) {
+          console.error('message handling failed', err);
+        }
+      });
+      return;
+    }
+
+    rejectUpgrade(socket, 400, 'Bad Request');
+  });
+
+  const heartbeat = setInterval(() => {
+    for (const ws of sockets) {
+      if (!ws.alive) ws.close(1001);
+      else {
+        ws.alive = false;
+        ws.ping();
+      }
+    }
+    const now = Date.now();
+    for (const [t, e] of tokens) if (e.exp < now) tokens.delete(t);
+    for (const [ip, r] of loginAttempts) if (r.reset <= now) loginAttempts.delete(ip);
+    for (const [ip, arr] of ipMsgs) if (!arr.length || arr[arr.length - 1] < now - 60000) ipMsgs.delete(ip);
+    for (const [ip, arr] of ipNewConvs) if (!arr.length || arr[arr.length - 1] < now - 3600000) ipNewConvs.delete(ip);
+    for (const [id, st] of msgStamps) {
+      if (!visitors.get(id)?.size && (!st.length || st[st.length - 1] < now - 60000)) msgStamps.delete(id);
+    }
+  }, 30000);
+  heartbeat.unref();
+
+  return new Promise((resolve) => {
+    server.listen(port, () => {
+      resolve({
+        server,
+        store,
+        port: server.address().port,
+        close: () =>
+          new Promise((done) => {
+            clearInterval(heartbeat);
+            for (const ws of sockets) ws.close(1001);
+            store.flush();
+            server.close(() => done());
+            server.closeAllConnections?.();
+          }),
+      });
+    });
+  });
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const app = await startServer();
+  console.log(`הצ׳אט פועל בכתובת http://localhost:${app.port}  (לוח בקרה: /  ,  דף הדגמה: /demo)`);
+  const stop = async () => {
+    await app.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+}
