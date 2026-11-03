@@ -39,6 +39,10 @@ export default function Settings({ token, site }) {
           notifyWhatsapp: settings.notifyWhatsapp,
           emergencyReply: settings.emergencyReply,
           privacyNote: settings.privacyNote,
+          missedCallEnabled: settings.missedCallEnabled,
+          missedCallText: settings.missedCallText,
+          callbackPhone: settings.callbackPhone,
+          autoCallback: settings.autoCallback,
           allowedOrigins: settings.origins.split('\n').map((s) => s.trim()).filter(Boolean),
         },
       });
@@ -81,6 +85,19 @@ export default function Settings({ token, site }) {
         <input id="set-privacy" type="text" value={settings.privacyNote} onChange={set('privacyNote')} />
         <label htmlFor="set-origins">אתרים מותרים (אחד בכל שורה, למשל https://shop.example.com). אם השדה ריק, כל אתר רשאי להשתמש בצ׳אט.</label>
         <textarea id="set-origins" value={settings.origins} onChange={set('origins')}></textarea>
+      </div>
+
+      <div className="panel">
+        <h3>שיחה שלא נענתה</h3>
+        <p style={{ color: '#6b7280', fontSize: '14px' }}>כשמישהו מתקשר ואף אחד לא עונה, נשלחת לו הודעת וואטסאפ והבוט ממשיך את השיחה. פנייה דחופה או בקשה לשיחה מתריעה אליכם ומחייגת אליכם ואז אל הלקוח.</p>
+        <label htmlFor="set-mc-on"><input id="set-mc-on" type="checkbox" checked={!!settings.missedCallEnabled} onChange={(e) => setSettings({ ...settings, missedCallEnabled: e.target.checked })} /> הפעלת השירות</label>
+        {!settings.missedCallAvailable && <p style={{ color: '#b45309', fontSize: '13px' }}>השירות עדיין לא הוגדר בשרת (MISSED_CALL_SECRET, WHATSAPP_MISSED_TEMPLATE ופרטי וואטסאפ).</p>}
+        <label htmlFor="set-mc-text">נוסח ההודעה שנשלחת (לתיעוד בשיחה בלבד; ההודעה בפועל היא התבנית המאושרת ב־Meta)</label>
+        <input id="set-mc-text" type="text" value={settings.missedCallText} onChange={set('missedCallText')} />
+        <label htmlFor="set-cb-phone">מספר לחיוג חוזר אליכם (אם ריק, מספר הוואטסאפ להתראות)</label>
+        <input id="set-cb-phone" type="tel" dir="ltr" value={settings.callbackPhone} onChange={set('callbackPhone')} />
+        <label htmlFor="set-cb-auto"><input id="set-cb-auto" type="checkbox" checked={!!settings.autoCallback} onChange={(e) => setSettings({ ...settings, autoCallback: e.target.checked })} /> חיוג אוטומטי אליכם כשיש פנייה דחופה או בקשה לשיחה</label>
+        {!settings.callbackAvailable && <p style={{ color: '#b45309', fontSize: '13px' }}>חיוג חוזר עדיין לא הוגדר בשרת (CALL_PROVIDER), ולכן תקבלו רק התראה.</p>}
       </div>
 
       <div className="panel">

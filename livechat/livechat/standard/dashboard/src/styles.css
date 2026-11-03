@@ -38,6 +38,7 @@ textarea { resize: vertical; min-height: 64px; }
 .pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
 .pill.unread { background: var(--brand); color: #fff; }
 .pill.urgent { background: #dc2626; color: #fff; }
+.pill.wa { background: #dcfce7; color: #166534; }
 .pill.human { background: #fef3c7; color: #92400e; }
 .empty { padding: 32px; text-align: center; color: var(--muted); }
 

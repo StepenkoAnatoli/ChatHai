@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "setup": "npm --prefix server install && npm --prefix dashboard install",
+    "setup": "node scripts/setup.js",
     "build": "npm --prefix dashboard run build",
     "start": "node server/index.js",
     "dev:server": "node --watch server/index.js",

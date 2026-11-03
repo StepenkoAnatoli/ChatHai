@@ -131,6 +131,10 @@ export default function Dashboard({ token, site, onLogout }) {
                   <span className={`dot ${c.online ? 'on' : ''}`}></span>
                   <b>{visitorName(c)}</b>
                   {c.urgent && <span className="pill urgent">דחוף</span>}
+                  {c.channel === 'whatsapp' && <span className="pill wa">וואטסאפ</span>}
+                  {c.callback === 'requested' && <span className="pill human">חיוג חוזר נשלח</span>}
+                  {c.callback === 'failed' && <span className="pill urgent">החיוג נכשל</span>}
+                  {c.callback === 'limit' && <span className="pill human">מכסת חיוג מלאה</span>}
                   {c.needsHuman && !c.humanTakeover && <span className="pill human">דורש התייחסות</span>}
                   {c.unread > 0 && <span className="pill unread">{c.unread}</span>}
                   <small>{timeOf(c.updatedAt)}</small>
