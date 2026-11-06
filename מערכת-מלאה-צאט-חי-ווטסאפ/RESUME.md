@@ -13,31 +13,20 @@
 - "מוכן לאדם" = חירום / הבוט לא ידע / המתקשר ביקש שיתקשרו. שאלה רגילה (שעות פעילות) לא מחייגת לבעל העסק.
 - משוחחי וואטסאפ מזוהים לפי `wa-<מספר>`; דפדפן לא יכול להתחבר ל־id כזה.
 - הודעה אחת לשעה למתקשר, מכסות לדקה/ליום, ה־endpoint כבוי בלי `MISSED_CALL_SECRET`, ה־webhook של Meta לא מקבל בלי חתימה.
-- תמחור: ההחלטה הקודמת הייתה בוט ב-₪299 (`03_תמחור.md`). **מוצע לשינוי** (`05`, `06`): סולם ₪290 / ₪490 (+₪990 הקמה) / ₪790 (+₪1,500 הקמה) לקליניקות; מסלול בסיסי ₪149–199 לבעלי מקצוע; סיטונאי ₪200–250 לסוכנויות. טרם אושר.
+- תמחור (**אושר 2026-11-06**, מחליף את ₪299 מ-`03_תמחור.md`): סולם ₪290 / ₪490 (+₪990 הקמה) / ₪790 (+₪1,500 הקמה) לקליניקות. עדיין הצעה בלבד: מסלול בסיסי ₪149–199 לבעלי מקצוע, סיטונאי ₪200–250 לסוכנויות.
 - כיוון (`05`): שילוב. מיקוד במרפאות אסתטיקה ושיניים פרטיות; בעלי מקצוע כמסלול בסיסי. טרם אושר.
 
-## פתוח (עודכן 2026-11-06, ראו `04`, `05`, `06`)
-**פעולות:**
-1. **חוסם השקה:** opt-in בשיחה עצמה (IVR: "הקישו 1 לוואטסאפ") + לוג חותמת זמן; חוות דעת משפטית (סעיף 30א, תיקון 13, סעיף 13ד).
-2. Meta: Business Verification + App Review (שני סרטונים, Advanced access ל-`whatsapp_business_messaging` ו-`whatsapp_business_management`). Access Verification כבר לא נדרש; אם הטופס עדיין מופיע ב-Dashboard, למלא אותו.
-3. Embedded Signup (להתחיל ב-Hosted) + coexistence; טבלת tenants (WABA/phone_number_id לכל לקוח) במקום `WHATSAPP_PHONE_ID` יחיד; webhooks של `message_template_status_update` ו-`phone_number_name_update` + re-register אחרי אישור שם.
-4. להגיש את `missed_call_he` ולוודא קטגוריית utility.
-5. מספר דמו Twilio IL (Local – $5.50 לחודש) + הקצאה אוטומטית לכל לקוח + שליחת הוראות *61 לפי מפעיל + שיחת בדיקה.
-6. חיוב: SUMIT ל-MVP (או Cardcom בנפח), הוראת קבע + רצף גבייה ב-n8n. לא Stripe.
-7. DPA בלחיצה + מדיניות פרטיות + כפתור ביטול עצמי.
-8. סריקת אתר → FAQ + guardrails לחירום + בדיקה ידנית; ציון בריאות + התראת "ההפניה נשברה"; דוח שבועי אוטומטי.
-9. שוק: 25 ראיונות (15 אסתטיקה, 10 שיניים), פיילוט 30 יום ב-5 קליניקות, 2 סוכנויות white-label לפיילוט. פנייה יזומה: הודעה חד-פעמית שמבקשת הסכמה בלבד.
+## פתוח (עודכן 2026-11-06; כל פריטי המחקר נסגרו, ראו `06`, סעיף 11)
+1. **חוסם השקה:** opt-in בשיחה עצמה (IVR: "הקישו 1 לוואטסאפ") + לוג חותמת זמן; חוות דעת משפטית (סעיף 30א, תיקון 13).
+2. Meta: Business Verification + App Review (שני סרטונים, Advanced access ל-`whatsapp_business_messaging` ו-`whatsapp_business_management`). Access Verification לא נדרש; אם הטופס עדיין מופיע ב-Dashboard, למלא.
+3. Embedded Signup (להתחיל ב-Hosted) + coexistence (נתמך בישראל); טבלת tenants במקום `WHATSAPP_PHONE_ID` יחיד; webhooks של `message_template_status_update` ו-`phone_number_name_update` + re-register אחרי אישור שם.
+4. להגיש את `missed_call_he` ולוודא קטגוריית utility ($0.0053 לישראל).
+5. Twilio IL: לקנות מספר Local ($5.50) ולבדוק בפועל הפניית *61 מ-Partner/Cellcom/Pelephone/Bezeq ואיזה caller ID מתקבל; לבדוק דרישת מסמכים ב-Console בזמן הקנייה.
+6. חיוב: SUMIT, הוראת קבע + רצף גבייה ב-n8n, לפי הסולם שאושר.
+7. DPA בלחיצה + מדיניות פרטיות + כפתור ביטול עצמי (מדיניות שירות; סעיף 13ד לא חל על קליניקה).
+8. סריקת אתר → FAQ + guardrails לחירום + בדיקה ידנית; ציון בריאות + התראת "ההפניה נשברה"; דוח שבועי אוטומטי; לידים ל-Easybizy (call-logs/leads) ול-Medform (Zapier create_lead).
+9. שוק: 25 ראיונות (15 אסתטיקה, 10 שיניים), פיילוט 30 יום ב-5 קליניקות כולל בדיקת איכות העברית של הבוט, 2 סוכנויות white-label לפיילוט. פנייה יזומה: הודעה חד-פעמית שמבקשת הסכמה בלבד.
 10. תחזוקה: לבדוק UI בדפדפן; `zero/` – להחיל או למחוק; מדיניות שמירה ומחיקה לתמלולים; גישור: הודעת המשך כשבעל העסק לא ענה + אישור לחיצה נגד תא קולי.
-
-**עדיין לא מאומת:**
-11. Twilio IL: דרישות Regulatory Bundle/Address (Regulations API, IsoCountry=IL); הפניה מותנית מ-Partner/Cellcom/Pelephone/Bezeq למספר Twilio (בדיקה מעשית).
-12. Coexistence: אישור רשמי שמספרי +972 נתמכים.
-13. תעריף Meta ל-utility בישראל ($0.0053 מול $0.0061) – לאמת מול ה-CSV של Meta.
-14. מחירונים רשמיים: Tranzila, iCount, Smartbee, Hyp, Grow עצמאי, PayPlus, מנוי Cardcom; Stripe – מעקב אחרי כניסה לישראל.
-15. מחירים רשמיים: Interakt, AiSensy, Kommo, ManyChat, Tidio, Podium, Birdeye, Weave, NexHealth, Synthflow, Prospira, Easybizy; סוכנויות ישראליות נוספות.
-16. 019 / זול / exm / Voicenter: תעריפי דקה ו-API.
-17. API של Medform, Calmark, Easybizy (יצירת תור).
-18. סעיף 13ד לחוק הגנת הצרכן לגבי לקוח עסקי; איכות LLM בעברית; churn ושעות תמיכה ללקוח ב-SMB SaaS.
 
 ## קבצים
 - קוד: `livechat/livechat/standard/server/{bot,notify,index,store,missedcall,callbridge}.js`, `test/{emergency,missedcall}.test.js`, `MISSED-CALL.md`
